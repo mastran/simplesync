@@ -35,6 +35,7 @@ struct Notify;
 struct Blame;
 struct BlameNotify;
 struct Finality;
+struct QC;
 
 /** Abstraction for HotStuff protocol state machine (without network implementation). */
 class HotStuffCore {
@@ -66,6 +67,8 @@ class HotStuffCore {
     promise_t hqc_update_waiting;
     promise_t view_change_waiting;
     promise_t view_trans_waiting;
+    std::unordered_map<uint32_t, promise_t> view_waiting;
+
     /* == feature switches == */
     /** always vote negatively, useful for some PaceMakers */
     bool vote_disabled;
@@ -80,6 +83,7 @@ class HotStuffCore {
     void on_receive_proposal_(const Proposal &prop);
     void on_view_change();
     void on_view_trans();
+    void on_enter_view(const uint32_t _view);
     void _vote(const block_t &blk);
     void _blame();
     void _new_view();
@@ -125,6 +129,8 @@ class HotStuffCore {
     void on_blame_timeout();
     void on_viewtrans_timeout();
 
+    void on_receive_qc(const quorum_cert_bt &qc);
+
     /** Call to submit new commands to be decided (executed). "Parents" must
      * contain at least one block, and the first block is the actual parent,
      * while the others are uncles/aunts */
@@ -158,15 +164,20 @@ class HotStuffCore {
     virtual void set_viewtrans_timer(double t_sec) = 0;
     virtual void stop_viewtrans_timer() = 0;
 
+    virtual void do_broadcast_qc(const QC &qc) = 0;
+
+    virtual void enter_view(uint32_t _view) = 0;
+    virtual void clear_cmd_pool(const block_t &blk) = 0;
+
     /* The user plugs in the detailed instances for those
      * polymorphic data types. */
     public:
     /** Create a partial certificate that proves the vote for a block. */
-    virtual part_cert_bt create_part_cert(const PrivKey &priv_key, const uint256_t &blk_hash) = 0;
+    virtual part_cert_bt create_part_cert(const PrivKey &priv_key, const uint256_t &blk_hash, const uint32_t &view) = 0;
     /** Create a partial certificate from its seralized form. */
     virtual part_cert_bt parse_part_cert(DataStream &s) = 0;
     /** Create a quorum certificate that proves 2f+1 votes for a block. */
-    virtual quorum_cert_bt create_quorum_cert(const uint256_t &blk_hash) = 0;
+    virtual quorum_cert_bt create_quorum_cert(const uint256_t &blk_hash, const uint32_t &view) = 0;
     /** Create a quorum certificate from its serialized form. */
     virtual quorum_cert_bt parse_quorum_cert(DataStream &s) = 0;
     /** Create a command object from its serialized form. */
@@ -194,6 +205,8 @@ class HotStuffCore {
     /** Get a promise resolved before a view change. */
     promise_t async_wait_view_trans();
 
+    promise_t async_wait_enter_view(const uint32_t _view);
+
     /* Other useful functions */
     const block_t &get_genesis() { return b0; }
     const block_t &get_hqc() { return hqc.first; }
@@ -216,6 +229,8 @@ struct Proposal: public Serializable {
     ReplicaID proposer;
     /** block being proposed */
     block_t blk;
+
+    uint32_t view;
     /** handle of the core object to allow polymorphism. The user should use
      * a pointer to the object of the class derived from HotStuffCore */
     HotStuffCore *hsc;
@@ -223,18 +238,19 @@ struct Proposal: public Serializable {
     Proposal(): blk(nullptr), hsc(nullptr) {}
     Proposal(ReplicaID proposer,
             const block_t &blk,
+            const uint32_t &view,
             HotStuffCore *hsc):
         proposer(proposer),
-        blk(blk), hsc(hsc) {}
+        blk(blk), view(view), hsc(hsc) {}
 
     Proposal(const Proposal &other):
         proposer(other.proposer),
-        blk(other.blk),
+        blk(other.blk), view(other.view),
         hsc(other.hsc) {}
 
     void serialize(DataStream &s) const override {
         s << proposer
-          << *blk;
+          << *blk << view;
     }
 
     inline void unserialize(DataStream &s) override;
@@ -243,7 +259,8 @@ struct Proposal: public Serializable {
         DataStream s;
         s << "<proposal "
           << "rid=" << std::to_string(proposer) << " "
-          << "blk=" << get_hex10(blk->get_hash()) << ">";
+          << "blk=" << get_hex10(blk->get_hash()) << " "
+          << "view=" << std::to_string(view) << ">";
         return std::move(s);
     }
 };
@@ -255,6 +272,8 @@ struct Vote: public Serializable {
     uint256_t blk_hash;
     /** proof of validity for the vote */
     part_cert_bt cert;
+
+    uint32_t view;
     
     /** handle of the core object to allow polymorphism */
     HotStuffCore *hsc;
@@ -263,33 +282,36 @@ struct Vote: public Serializable {
     Vote(ReplicaID voter,
         const uint256_t &blk_hash,
         part_cert_bt &&cert,
+        const uint32_t &view,
         HotStuffCore *hsc):
         voter(voter),
         blk_hash(blk_hash),
-        cert(std::move(cert)), hsc(hsc) {}
+        cert(std::move(cert)),
+        view(view), hsc(hsc) {}
 
     Vote(const Vote &other):
         voter(other.voter),
         blk_hash(other.blk_hash),
         cert(other.cert ? other.cert->clone() : nullptr),
+        view(other.view),
         hsc(other.hsc) {}
 
     Vote(Vote &&other) = default;
     
     void serialize(DataStream &s) const override {
-        s << voter << blk_hash << *cert;
+        s << voter << blk_hash << view << *cert;
     }
 
     void unserialize(DataStream &s) override {
         assert(hsc != nullptr);
-        s >> voter >> blk_hash;
+        s >> voter >> blk_hash >> view;
         cert = hsc->parse_part_cert(s);
     }
 
     static uint256_t proof_obj_hash(const uint256_t &blk_hash) {
-        DataStream p;
-        p << (uint8_t)ProofType::VOTE << blk_hash;
-        return p.get_hash();
+//        DataStream p;
+//        p << blk_hash;
+        return blk_hash;
     }
 
     bool verify() const {
@@ -309,7 +331,8 @@ struct Vote: public Serializable {
         DataStream s;
         s << "<vote "
           << "rid=" << std::to_string(voter) << " "
-          << "blk=" << get_hex10(blk_hash) << ">";
+          << "blk=" << get_hex10(blk_hash) << " "
+          << "view=" << std::to_string(view) << ">";
         return std::move(s);
     }
 };
@@ -500,7 +523,43 @@ inline void Proposal::unserialize(DataStream &s) {
     Block _blk;
     _blk.unserialize(s, hsc);
     blk = hsc->storage->add_blk(std::move(_blk), hsc->get_config());
+    s >> view;
 }
+
+struct QC: public Serializable {
+    quorum_cert_bt qc;
+    /** handle of the core object to allow polymorphism. */
+    HotStuffCore *hsc;
+
+    QC(): qc(nullptr), hsc(nullptr) {}
+    QC(quorum_cert_bt &&qc, HotStuffCore *hsc): hsc(hsc), qc(std::move(qc)) {}
+
+    void serialize(DataStream &s) const override {
+        s << *qc;
+    }
+
+    void unserialize(DataStream &s) override {
+        qc = hsc->parse_quorum_cert(s);
+    }
+
+    bool verify() const {
+        assert(hsc != nullptr);
+        return qc->verify(hsc->get_config());
+    }
+
+    promise_t verify(VeriPool &vpool) const {
+        assert(hsc != nullptr);
+        return qc->verify(hsc->get_config(), vpool).then([this](bool result) {
+            return result;
+        });
+    }
+
+    operator std::string () const {
+        DataStream s;
+        s << "<qc>";
+        return s;
+    }
+};
 
 struct Finality: public Serializable {
     ReplicaID rid;

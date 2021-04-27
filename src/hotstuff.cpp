@@ -96,6 +96,13 @@ void MsgRespBlock::postponed_parse(HotStuffCore *hsc) {
     }
 }
 
+const opcode_t MsgQC::opcode;
+MsgQC::MsgQC(const QC &qc) { serialized << qc; }
+void MsgQC::postponed_parse(HotStuffCore *hsc) {
+    qc.hsc = hsc;
+    serialized >> qc;
+}
+
 // TODO: improve this function
 void HotStuffBase::exec_command(uint256_t cmd_hash, commit_cb_t callback) {
     cmd_pending.enqueue(std::make_pair(cmd_hash, callback));
@@ -221,7 +228,8 @@ void HotStuffBase::propose_handler(MsgPropose &&msg, const Net::conn_t &conn) {
     block_t blk = prop.blk;
     if (!blk) return;
     promise::all(std::vector<promise_t>{
-        async_deliver_blk(blk->get_hash(), peer)
+        async_deliver_blk(blk->get_hash(), peer),
+        async_wait_enter_view(prop.view)
     }).then([this, prop = std::move(prop)]() {
         on_receive_proposal(prop);
     });
@@ -236,6 +244,7 @@ void HotStuffBase::vote_handler(MsgVote &&msg, const Net::conn_t &conn) {
     promise::all(std::vector<promise_t>{
         async_deliver_blk(v->blk_hash, peer),
         v->verify(vpool),
+        async_wait_enter_view(v->view),
     }).then([this, v=std::move(v)](const promise::values_t values) {
         if (!promise::any_cast<bool>(values[1]))
             LOG_WARN("invalid vote from %d", v->voter);
@@ -287,6 +296,19 @@ void HotStuffBase::blamenotify_handler(MsgBlameNotify &&msg, const Net::conn_t &
             LOG_WARN("invalid blamenotify message from %s", std::string(peer).c_str());
         else
             on_receive_blamenotify(*bn);
+    });
+}
+
+void HotStuffBase::qc_handler(MsgQC &&msg, const Net::conn_t &conn) {
+    const NetAddr &peer = conn->get_peer_addr();
+    if (peer.is_null()) return;
+    msg.postponed_parse(this);
+    RcObj<QC> qc(new QC(std::move(msg.qc)));
+    promise::all(std::vector<promise_t>{
+            async_deliver_blk(qc->qc->get_obj_hash(), peer),
+            qc->verify(vpool)
+    }).then([this, qc](const promise::values_t values) {
+        on_receive_qc(qc->qc);
     });
 }
 
@@ -484,6 +506,7 @@ HotStuffBase::HotStuffBase(uint32_t blk_size,
     pn.reg_handler(salticidae::generic_bind(&HotStuffBase::req_blk_handler, this, _1, _2));
     pn.reg_handler(salticidae::generic_bind(&HotStuffBase::resp_blk_handler, this, _1, _2));
     pn.reg_conn_handler(salticidae::generic_bind(&HotStuffBase::conn_handler, this, _1, _2));
+    pn.reg_handler(salticidae::generic_bind(&HotStuffBase::qc_handler, this, _1, _2));
     pn.start();
     pn.listen(listen_addr);
 }
@@ -511,6 +534,18 @@ void HotStuffBase::do_notify(const Notify &notify) {
         on_receive_notify(notify);
 }
 
+void HotStuffBase::clear_cmd_pool(const block_t &blk) {
+    std::vector cmds = blk->get_cmds();
+    for (size_t i = 0; i < cmds.size(); i++){
+        cmd_pool.erase(cmds[i]);
+    }
+}
+
+void HotStuffBase::enter_view(const uint32_t _view) {
+    LOG_INFO("entering view %d", _view);
+    pmaker->enter_view(_view);
+}
+
 HotStuffBase::~HotStuffBase() {}
 
 void HotStuffBase::start(
@@ -530,6 +565,7 @@ void HotStuffBase::start(
 
     /* ((n - 1) + 1 - 1) / 2 */
     uint32_t nfaulty = peers.size() / 2;
+    proposed_view = 0;
     if (nfaulty == 0)
         LOG_WARN("too few replicas in the system to tolerate any failure");
     on_init(nfaulty, delta);
@@ -548,6 +584,7 @@ void HotStuffBase::start(
             if (it == decision_waiting.end())
             {
                 it = decision_waiting.insert(std::make_pair(cmd_hash, e.second)).first;
+                cmd_pool.insert(cmd_hash);
 #ifdef SYNCHS_LATBREAKDOWN
                 cmd_lats[cmd_hash].on_init();
 #endif
@@ -555,31 +592,26 @@ void HotStuffBase::start(
             else
                 e.second(Finality(id, 0, 0, 0, cmd_hash, uint256_t()));
             if (proposer != get_id()) continue;
-            cmd_pending_buffer.push(cmd_hash);
-            if (cmd_pending_buffer.size() >= blk_size)
-            {
+            if (proposed_view >= get_view()) continue;
+
+            if(cmd_pool.size() >= blk_size){
+                auto _it = cmd_pool.begin();
                 std::vector<uint256_t> cmds;
-                for (uint32_t i = 0; i < blk_size; i++)
-                {
-                    cmds.push_back(cmd_pending_buffer.front());
-                    cmd_pending_buffer.pop();
+                for (uint32_t i = 0; i < blk_size; i++){
+                    uint256_t ch = *_it;
+                    cmds.push_back(ch);
+                    cmd_pool.erase(ch);
                 }
+
                 pmaker->beat().then([this, cmds = std::move(cmds)](ReplicaID proposer) {
-                    if (proposer == get_id())
-                    {
+                    if (proposer == get_id()) {
+                        proposed_view = get_view();
                         on_propose(cmds, pmaker->get_parents());
-#ifdef SYNCHS_LATBREAKDOWN
-                        for (auto &ch: cmds)
-                            cmd_lats[ch].on_propose();
-#endif
-#ifdef SYNCHS_AUTOCLI
-                        for (size_t i = pmaker->get_pending_size(); i < 1; i++)
-                            do_demand_commands(blk_size);
-#endif
                     }
                 });
                 return true;
             }
+
 #ifdef SYNCHS_LATBREAKDOWN
             auto orig_cb = std::move(it.second);
             it.second = [this](Finality &fin) {

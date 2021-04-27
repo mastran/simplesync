@@ -86,7 +86,7 @@ bool HotStuffCore::on_deliver_blk(const block_t &blk) {
 }
 
 void HotStuffCore::update_hqc(const block_t &_hqc, const quorum_cert_bt &qc) {
-    assert(qc->get_obj_hash() == Vote::proof_obj_hash(_hqc->get_hash()));
+    assert(qc->get_obj_hash() == _hqc->get_hash());
     if (_hqc->height > hqc.first->height)
     {
         hqc = std::make_pair(_hqc, qc->clone());
@@ -124,13 +124,12 @@ void HotStuffCore::_vote(const block_t &blk) {
     LOG_PROTO("vote for %s", get_hex10(blk_hash).c_str());
     Vote vote(id, blk_hash,
             create_part_cert(
-                *priv_key,
-                Vote::proof_obj_hash(blk_hash)), this);
+                *priv_key, blk_hash, view), view, this);
 #ifndef SYNCHS_NOVOTEBROADCAST
     on_receive_vote(vote);
 #endif
     do_broadcast_vote(vote);
-    set_commit_timer(blk, 2 * config.delta);
+//    set_commit_timer(blk, 2 * config.delta);
     //set_blame_timer(3 * config.delta);
 }
 
@@ -140,7 +139,7 @@ void HotStuffCore::_blame() {
     Blame blame(id, view,
             create_part_cert(
                 *priv_key,
-                Blame::proof_obj_hash(view)), this);
+                Blame::proof_obj_hash(view), view), this);
     on_receive_blame(blame);
     do_broadcast_blame(blame);
 }
@@ -181,9 +180,9 @@ block_t HotStuffCore::on_propose(const std::vector<uint256_t> &cmds,
             nullptr
         ));
     const uint256_t bnew_hash = bnew->get_hash();
-    bnew->self_qc = create_quorum_cert(Vote::proof_obj_hash(bnew_hash));
+    bnew->self_qc = create_quorum_cert(bnew_hash, view);
     on_deliver_blk(bnew);
-    Proposal prop(id, bnew, nullptr);
+    Proposal prop(id, bnew, view, nullptr);
     LOG_PROTO("propose %s", std::string(*bnew).c_str());
     /* self-vote */
     if (bnew->height <= vheight)
@@ -237,6 +236,7 @@ void HotStuffCore::on_receive_proposal(const Proposal &prop) {
         on_qc_finish(bnew->qc_ref);
     finished_propose[bnew] = true;
     on_receive_proposal_(prop);
+    clear_cmd_pool(prop.blk);
     // check if the proposal extends the highest certified block
     if (opinion && !vote_disabled) _vote(bnew);
 }
@@ -244,6 +244,7 @@ void HotStuffCore::on_receive_proposal(const Proposal &prop) {
 void HotStuffCore::on_receive_vote(const Vote &vote) {
     LOG_PROTO("got %s", std::string(vote).c_str());
     LOG_PROTO("now state: %s", std::string(*this).c_str());
+    if (vote.view < view) return;
     block_t blk = get_delivered_blk(vote.blk_hash);
     assert(vote.cert);
     if (!finished_propose[blk])
@@ -251,7 +252,7 @@ void HotStuffCore::on_receive_vote(const Vote &vote) {
         // FIXME: fill voter as proposer as a quickfix here, may be inaccurate
         // for some PaceMakers
         //finished_propose[blk] = true;
-        on_receive_proposal(Proposal(vote.voter, blk, nullptr));
+        on_receive_proposal(Proposal(vote.voter, blk, view, nullptr));
     }
     size_t qsize = blk->voted.size();
     if (qsize >= config.nmajority) return;
@@ -263,14 +264,18 @@ void HotStuffCore::on_receive_vote(const Vote &vote) {
     auto &qc = blk->self_qc;
     if (qc == nullptr)
     {
-        qc = create_quorum_cert(Vote::proof_obj_hash(blk->get_hash()));
+        qc = create_quorum_cert(blk->get_hash(), view);
     }
     qc->add_part(vote.voter, *vote.cert);
     if (qsize + 1 == config.nmajority)
     {
+        set_commit_timer(blk, 2 * config.delta);
         qc->compute();
         update_hqc(blk, qc);
         on_qc_finish(blk);
+        do_broadcast_qc(QC(qc->clone(), this));
+        view = view + 1;
+        enter_view(view);
     }
 }
 
@@ -300,6 +305,25 @@ void HotStuffCore::on_receive_blamenotify(const BlameNotify &bn) {
     _new_view();
 }
 
+void HotStuffCore::on_receive_qc(const quorum_cert_bt &qc){
+    uint32_t _view = qc->get_view();
+    if (_view < view) return;
+    LOG_PROTO("got QC view = %d", _view);
+
+    block_t blk = get_delivered_blk(qc->get_obj_hash());
+    size_t qsize = blk->voted.size();
+    if (qsize >= config.nmajority) return;
+
+    auto &_qc = blk->self_qc;
+    _qc = qc->clone();
+    set_commit_timer(blk, 2*config.delta);
+    on_qc_finish(blk);
+
+    view = _view + 1;
+    do_broadcast_qc(QC(qc->clone(), this));
+    enter_view(view);
+}
+
 void HotStuffCore::on_commit_timeout(const block_t &blk) { check_commit(blk); }
 
 void HotStuffCore::on_blame_timeout() {
@@ -312,7 +336,7 @@ void HotStuffCore::on_viewtrans_timeout() {
     view++;
     view_trans = false;
     proposals.clear();
-    blame_qc = create_quorum_cert(Blame::proof_obj_hash(view));
+    blame_qc = create_quorum_cert(Blame::proof_obj_hash(view), view);
     blamed.clear();
     set_blame_timer(3 * config.delta);
     on_view_change(); // notify the PaceMaker of the view change
@@ -326,12 +350,13 @@ void HotStuffCore::on_viewtrans_timeout() {
 void HotStuffCore::on_init(uint32_t nfaulty, double delta) {
     config.nmajority = config.nreplicas - nfaulty;
     config.delta = delta;
-    blame_qc = create_quorum_cert(Blame::proof_obj_hash(view));
-    b0->qc = create_quorum_cert(Vote::proof_obj_hash(b0->get_hash()));
+    blame_qc = create_quorum_cert(Blame::proof_obj_hash(view), view);
+    b0->qc = create_quorum_cert(b0->get_hash(), view);
     b0->qc->compute();
     b0->self_qc = b0->qc->clone();
     b0->qc_ref = b0;
     hqc = std::make_pair(b0, b0->qc->clone());
+    view = 1;
 }
 
 void HotStuffCore::prune(uint32_t staleness) {
@@ -410,6 +435,17 @@ promise_t HotStuffCore::async_wait_view_trans() {
     return view_trans_waiting;
 }
 
+promise_t HotStuffCore::async_wait_enter_view(const uint32_t _view) {
+    if (_view <= view)
+        return promise_t([](promise_t &pm) {
+            pm.resolve();
+        });
+    auto it = view_waiting.find(_view);
+    if (it == view_waiting.end())
+        it = view_waiting.insert(std::make_pair(_view, promise_t())).first;
+    return it->second;
+}
+
 void HotStuffCore::on_propose_(const Proposal &prop) {
     auto t = std::move(propose_waiting);
     propose_waiting = promise_t();
@@ -438,6 +474,10 @@ void HotStuffCore::on_view_trans() {
     auto t = std::move(view_trans_waiting);
     view_trans_waiting = promise_t();
     t.resolve();
+}
+
+void HotStuffCore::on_enter_view(const uint32_t _view) {
+    view_waiting[_view].resolve();
 }
 
 HotStuffCore::operator std::string () const {

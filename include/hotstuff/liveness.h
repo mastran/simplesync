@@ -53,6 +53,7 @@ class PaceMaker {
     virtual void impeach() {}
     virtual void on_consensus(const block_t &) {}
     virtual size_t get_pending_size() = 0;
+    virtual void enter_view(const uint32_t view) {}
 };
 
 using pacemaker_bt = BoxObj<PaceMaker>;
@@ -323,9 +324,9 @@ class PMRoundRobinProposer: virtual public PaceMaker {
         pm_wait_propose.reject();
         pm_qc_manual.reject();
         // start timer
-        timer = TimerEvent(ec, salticidae::generic_bind(&PMRoundRobinProposer::on_exp_timeout, this, _1));
-        timer.add(exp_timeout);
-        exp_timeout *= 2;
+//        timer = TimerEvent(ec, salticidae::generic_bind(&PMRoundRobinProposer::on_exp_timeout, this, _1));
+//        timer.add(exp_timeout);
+//        exp_timeout *= 2;
     }
 
     void stop_rotate() {
@@ -343,13 +344,13 @@ class PMRoundRobinProposer: virtual public PaceMaker {
             auto hs = static_cast<hotstuff::HotStuffBase *>(hsc);
             hs->do_elected();
             hs->get_tcall().async_call([this, hs](salticidae::ThreadCall::Handle &) {
-                auto &pending = hs->get_decision_waiting();
-                if (!pending.size()) return;
-                HOTSTUFF_LOG_PROTO("reproposing pending commands");
-                std::vector<uint256_t> cmds;
-                for (auto &p: pending)
-                    cmds.push_back(p.first);
-                do_new_consensus(0, cmds);
+//                auto &pending = hs->get_decision_waiting();
+//                if (!pending.size()) return;
+//                HOTSTUFF_LOG_PROTO("reproposing pending commands");
+//                std::vector<uint256_t> cmds;
+//                for (auto &p: pending)
+//                    cmds.push_back(p.first);
+//                do_new_consensus(0, cmds);
             });
         }
     }
@@ -379,6 +380,7 @@ class PMRoundRobinProposer: virtual public PaceMaker {
 
     void init() {
         exp_timeout = base_timeout;
+        proposer = 0;
         stop_rotate();
     }
 
@@ -405,6 +407,14 @@ class PMRoundRobinProposer: virtual public PaceMaker {
             pm.resolve(last_proposer);
         });
     }
+
+    void enter_view(uint32_t view) override {
+        if (rotating) return;
+        rotate();
+
+        stop_rotate();
+    }
+
 };
 
 struct PaceMakerRR: public PMHighTail, public PMRoundRobinProposer {

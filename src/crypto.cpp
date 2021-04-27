@@ -23,8 +23,8 @@ secp256k1_context_t secp256k1_default_sign_ctx = new Secp256k1Context(true);
 secp256k1_context_t secp256k1_default_verify_ctx = new Secp256k1Context(false);
 
 QuorumCertSecp256k1::QuorumCertSecp256k1(
-        const ReplicaConfig &config, const uint256_t &obj_hash):
-            QuorumCert(), obj_hash(obj_hash), rids(config.nreplicas) {
+        const ReplicaConfig &config, const uint256_t &obj_hash, const uint32_t &view):
+            QuorumCert(), obj_hash(obj_hash), view(view), rids(config.nreplicas) {
     rids.clear();
 }
    

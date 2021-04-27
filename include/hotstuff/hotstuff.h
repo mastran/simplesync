@@ -105,6 +105,15 @@ struct MsgRespBlock {
     void postponed_parse(HotStuffCore *hsc);
 };
 
+struct MsgQC {
+    static const opcode_t opcode = 0x7;
+    DataStream serialized;
+    QC qc;
+    MsgQC(const QC &);
+    MsgQC(DataStream &&s): serialized(std::move(s)) {}
+    void postponed_parse(HotStuffCore *hsc);
+};
+
 using promise::promise_t;
 
 class HotStuffBase;
@@ -188,6 +197,7 @@ class HotStuffBase: public HotStuffCore {
     std::unordered_map<const uint256_t, BlockFetchContext> blk_fetch_waiting;
     std::unordered_map<const uint256_t, BlockDeliveryContext> blk_delivery_waiting;
     std::unordered_map<const uint256_t, commit_cb_t> decision_waiting;
+    std::set<uint256_t> cmd_pool;
     using cmd_queue_t = salticidae::MPSCQueueEventDriven<std::pair<uint256_t, commit_cb_t>>;
     cmd_queue_t cmd_pending;
     std::queue<uint256_t> cmd_pending_buffer;
@@ -207,6 +217,8 @@ class HotStuffBase: public HotStuffCore {
     mutable double part_delivery_time_min;
     mutable double part_delivery_time_max;
     mutable std::unordered_map<const NetAddr, uint32_t> part_fetched_replica;
+
+    uint32_t proposed_view;
 
 #ifdef SYNCHS_LATBREAKDOWN
     struct CmdLatStat {
@@ -245,6 +257,8 @@ class HotStuffBase: public HotStuffCore {
     inline void req_blk_handler(MsgReqBlock &&, const Net::conn_t &);
     /** receives a block */
     inline void resp_blk_handler(MsgRespBlock &&, const Net::conn_t &);
+
+    inline void qc_handler(MsgQC &&, const Net::conn_t &);
 
     inline bool conn_handler(const salticidae::ConnPool::conn_t &, bool);
     template<typename T, typename M>
@@ -297,6 +311,13 @@ class HotStuffBase: public HotStuffCore {
 
     void do_decide(Finality &&) override;
     void do_consensus(const block_t &blk) override;
+
+    void do_broadcast_qc(const QC &qc) override {
+        _do_broadcast<QC, MsgQC>(qc);
+    }
+
+    void enter_view(uint32_t _view) override;
+    void clear_cmd_pool(const block_t &blk) override;
 
     protected:
 
@@ -351,12 +372,12 @@ class HotStuff: public HotStuffBase {
     using HotStuffBase::HotStuffBase;
     protected:
 
-    part_cert_bt create_part_cert(const PrivKey &priv_key, const uint256_t &blk_hash) override {
+    part_cert_bt create_part_cert(const PrivKey &priv_key, const uint256_t &blk_hash, const uint32_t &view) override {
         HOTSTUFF_LOG_DEBUG("create part cert with priv=%s, blk_hash=%s",
                             get_hex10(priv_key).c_str(), get_hex10(blk_hash).c_str());
         return new PartCertType(
                     static_cast<const PrivKeyType &>(priv_key),
-                    blk_hash);
+                    blk_hash, view);
     }
 
     part_cert_bt parse_part_cert(DataStream &s) override {
@@ -365,8 +386,8 @@ class HotStuff: public HotStuffBase {
         return pc;
     }
 
-    quorum_cert_bt create_quorum_cert(const uint256_t &blk_hash) override {
-        return new QuorumCertType(get_config(), blk_hash);
+    quorum_cert_bt create_quorum_cert(const uint256_t &blk_hash, const uint32_t & view) override {
+        return new QuorumCertType(get_config(), blk_hash, view);
     }
 
     quorum_cert_bt parse_quorum_cert(DataStream &s) override {
