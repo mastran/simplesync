@@ -534,16 +534,39 @@ void HotStuffBase::do_notify(const Notify &notify) {
         on_receive_notify(notify);
 }
 
-void HotStuffBase::clear_cmd_pool(const block_t &blk) {
-    std::vector cmds = blk->get_cmds();
-    for (size_t i = 0; i < cmds.size(); i++){
-        cmd_pool.erase(cmds[i]);
-    }
+void HotStuffBase::update_proposed_cmds(const block_t &blk) {
+    auto cmds = blk->get_cmds();
+    for (size_t i = 0; i < cmds.size(); i++)
+        proposed_cmds.insert(cmds[i]);
+
 }
 
 void HotStuffBase::enter_view(const uint32_t _view) {
-    LOG_INFO("entering view %d", _view);
+    HOTSTUFF_LOG_PROTO("entering view %d", _view);
     pmaker->enter_view(_view);
+}
+
+std::vector<uint256_t> HotStuffBase::fetch_cmds() {
+    std::vector<uint256_t> cmds;
+//    auto _it = cmd_pool.begin();
+//    for (uint32_t i = 0; i < blk_size; i++){
+//        uint256_t ch = *_it;
+//        cmds.push_back(ch);
+//        cmd_pool.erase(ch);
+//    }
+    uint32_t cmd_pending_size = cmd_pending_buffer.size();
+    for (uint32_t i = 0; i < cmd_pending_size; i++) {
+        auto ch = cmd_pending_buffer.front();
+        if (proposed_cmds.find(ch) == proposed_cmds.end()) {
+            cmds.push_back(ch);
+        }
+        cmd_pending_buffer.pop();
+        if (cmds.size() >= blk_size){
+            break;
+        }
+    }
+
+    return std::move(cmds);
 }
 
 HotStuffBase::~HotStuffBase() {}
@@ -584,7 +607,7 @@ void HotStuffBase::start(
             if (it == decision_waiting.end())
             {
                 it = decision_waiting.insert(std::make_pair(cmd_hash, e.second)).first;
-                cmd_pool.insert(cmd_hash);
+                cmd_pending_buffer.push(cmd_hash);
 #ifdef SYNCHS_LATBREAKDOWN
                 cmd_lats[cmd_hash].on_init();
 #endif
@@ -594,14 +617,8 @@ void HotStuffBase::start(
             if (proposer != get_id()) continue;
             if (proposed_view >= get_view()) continue;
 
-            if(cmd_pool.size() >= blk_size){
-                auto _it = cmd_pool.begin();
-                std::vector<uint256_t> cmds;
-                for (uint32_t i = 0; i < blk_size; i++){
-                    uint256_t ch = *_it;
-                    cmds.push_back(ch);
-                    cmd_pool.erase(ch);
-                }
+            if(cmd_pending_buffer.size() >= blk_size){
+                auto cmds = fetch_cmds();
 
                 pmaker->beat().then([this, cmds = std::move(cmds)](ReplicaID proposer) {
                     if (proposer == get_id()) {

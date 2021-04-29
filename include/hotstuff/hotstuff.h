@@ -197,7 +197,7 @@ class HotStuffBase: public HotStuffCore {
     std::unordered_map<const uint256_t, BlockFetchContext> blk_fetch_waiting;
     std::unordered_map<const uint256_t, BlockDeliveryContext> blk_delivery_waiting;
     std::unordered_map<const uint256_t, commit_cb_t> decision_waiting;
-    std::set<uint256_t> cmd_pool;
+    std::unordered_set<uint256_t> proposed_cmds;
     using cmd_queue_t = salticidae::MPSCQueueEventDriven<std::pair<uint256_t, commit_cb_t>>;
     cmd_queue_t cmd_pending;
     std::queue<uint256_t> cmd_pending_buffer;
@@ -317,7 +317,7 @@ class HotStuffBase: public HotStuffCore {
     }
 
     void enter_view(uint32_t _view) override;
-    void clear_cmd_pool(const block_t &blk) override;
+    void update_proposed_cmds(const block_t &blk) override;
 
     protected:
 
@@ -346,6 +346,11 @@ class HotStuffBase: public HotStuffCore {
 
     size_t size() const { return peers.size(); }
     const auto &get_decision_waiting() const { return decision_waiting; }
+    const auto &get_blk_size() const { return blk_size; }
+    const auto &get_cmd_pending_size() const { return cmd_pending_buffer.size(); }
+    const auto &get_proposed_view() { return proposed_view; }
+    std::vector<uint256_t> fetch_cmds();
+    void set_proposed_view(const uint32_t _view) { proposed_view = _view; }
     ThreadCall &get_tcall() { return tcall; }
     PaceMaker *get_pace_maker() { return pmaker.get(); }
     void print_stat() const;

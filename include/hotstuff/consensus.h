@@ -167,7 +167,7 @@ class HotStuffCore {
     virtual void do_broadcast_qc(const QC &qc) = 0;
 
     virtual void enter_view(uint32_t _view) = 0;
-    virtual void clear_cmd_pool(const block_t &blk) = 0;
+    virtual void update_proposed_cmds(const block_t &blk) = 0;
 
     /* The user plugs in the detailed instances for those
      * polymorphic data types. */
@@ -549,6 +549,12 @@ struct QC: public Serializable {
 
     promise_t verify(VeriPool &vpool) const {
         assert(hsc != nullptr);
+
+        // skip verification of qc from old views.
+        if (qc->get_view() <= hsc->get_view()){
+            promise_t pm;
+            return pm.then([]{ return true;});
+        }
         return qc->verify(hsc->get_config(), vpool).then([this](bool result) {
             return result;
         });

@@ -213,7 +213,7 @@ void HotStuffCore::on_receive_proposal(const Proposal &prop) {
         {
             // TODO: put equivocating blocks in the Blame msg
             LOG_INFO("conflicting proposal detected, start blaming");
-            _blame();
+            //_blame();
         }
         else opinion = true;
     }
@@ -236,7 +236,7 @@ void HotStuffCore::on_receive_proposal(const Proposal &prop) {
         on_qc_finish(bnew->qc_ref);
     finished_propose[bnew] = true;
     on_receive_proposal_(prop);
-    clear_cmd_pool(prop.blk);
+    update_proposed_cmds(prop.blk);
     // check if the proposal extends the highest certified block
     if (opinion && !vote_disabled) _vote(bnew);
 }
@@ -274,8 +274,9 @@ void HotStuffCore::on_receive_vote(const Vote &vote) {
         update_hqc(blk, qc);
         on_qc_finish(blk);
         do_broadcast_qc(QC(qc->clone(), this));
-        view = view + 1;
+        view += 1;
         enter_view(view);
+        on_enter_view(view);
     }
 }
 
@@ -322,6 +323,7 @@ void HotStuffCore::on_receive_qc(const quorum_cert_bt &qc){
     view = _view + 1;
     do_broadcast_qc(QC(qc->clone(), this));
     enter_view(view);
+    on_enter_view(view);
 }
 
 void HotStuffCore::on_commit_timeout(const block_t &blk) { check_commit(blk); }

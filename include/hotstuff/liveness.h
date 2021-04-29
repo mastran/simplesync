@@ -305,20 +305,20 @@ class PMRoundRobinProposer: virtual public PaceMaker {
     }
 
     void on_exp_timeout(TimerEvent &) {
-        if (proposer == hsc->get_id())
-            do_new_consensus(0, std::vector<uint256_t>{});
-        timer = TimerEvent(ec, [this](TimerEvent &){ rotate(); });
-        timer.add(prop_delay);
+//        if (proposer == hsc->get_id())
+//            do_new_consensus(0, std::vector<uint256_t>{});
+//        timer = TimerEvent(ec, [this](TimerEvent &){ rotate(); });
+//        timer.add(prop_delay);
     }
 
     /* role transitions */
 
-    void rotate() {
+    void rotate(uint32_t _view) {
         reg_proposal();
         reg_receive_proposal();
         prop_blk.clear();
         rotating = true;
-        proposer = (proposer + 1) % hsc->get_config().nreplicas;
+        proposer = (_view - 1) % hsc->get_config().nreplicas;
         HOTSTUFF_LOG_PROTO("Pacemaker: rotate to %d", proposer);
         pm_qc_finish.reject();
         pm_wait_propose.reject();
@@ -339,19 +339,15 @@ class PMRoundRobinProposer: virtual public PaceMaker {
         locked = false;
         last_proposed = hsc->get_genesis();
         proposer_update_last_proposed();
-        if (proposer == hsc->get_id())
-        {
+
+        if (proposer == hsc->get_id()) {
             auto hs = static_cast<hotstuff::HotStuffBase *>(hsc);
             hs->do_elected();
-            hs->get_tcall().async_call([this, hs](salticidae::ThreadCall::Handle &) {
-//                auto &pending = hs->get_decision_waiting();
-//                if (!pending.size()) return;
-//                HOTSTUFF_LOG_PROTO("reproposing pending commands");
-//                std::vector<uint256_t> cmds;
-//                for (auto &p: pending)
-//                    cmds.push_back(p.first);
-//                do_new_consensus(0, cmds);
-            });
+            if(hs->get_proposed_view() >= hsc->get_view()) return;
+            auto cmds = hs->fetch_cmds();
+            if (cmds.size() <= 0)  return;
+            hs->set_proposed_view(hsc->get_view());
+            hsc->on_propose(cmds, get_parents());
         }
     }
 
@@ -364,8 +360,8 @@ class PMRoundRobinProposer: virtual public PaceMaker {
     }
 
     void impeach() override {
-        if (rotating) return;
-        rotate();
+//        if (rotating) return;
+//        rotate();
         HOTSTUFF_LOG_INFO("schedule to impeach the proposer");
     }
 
@@ -408,10 +404,9 @@ class PMRoundRobinProposer: virtual public PaceMaker {
         });
     }
 
-    void enter_view(uint32_t view) override {
+    void enter_view(uint32_t _view) override {
         if (rotating) return;
-        rotate();
-
+        rotate(_view);
         stop_rotate();
     }
 
