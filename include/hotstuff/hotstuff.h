@@ -355,6 +355,8 @@ class HotStuffBase: public HotStuffCore {
     PaceMaker *get_pace_maker() { return pmaker.get(); }
     void print_stat() const;
     virtual void do_elected() {}
+
+    void early_propose(uint32_t _view, const block_t &blk) override ;
 #ifdef SYNCHS_AUTOCLI
     virtual void do_demand_commands(size_t) {}
 #endif
@@ -366,6 +368,8 @@ class HotStuffBase: public HotStuffCore {
     promise_t async_fetch_blk(const uint256_t &blk_hash, const NetAddr *replica_id, bool fetch_now = true);
     /** Returns a promise resolved (with block_t blk) when Block is delivered (i.e. prefix is fetched). */
     promise_t async_deliver_blk(const uint256_t &blk_hash,  const NetAddr &replica_id);
+
+    promise_t pm_qc_manual;
 };
 
 /** HotStuff protocol (templated by cryptographic implementation). */

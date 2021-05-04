@@ -538,7 +538,6 @@ void HotStuffBase::update_proposed_cmds(const block_t &blk) {
     auto cmds = blk->get_cmds();
     for (size_t i = 0; i < cmds.size(); i++)
         proposed_cmds.insert(cmds[i]);
-
 }
 
 void HotStuffBase::enter_view(const uint32_t _view) {
@@ -548,12 +547,6 @@ void HotStuffBase::enter_view(const uint32_t _view) {
 
 std::vector<uint256_t> HotStuffBase::fetch_cmds() {
     std::vector<uint256_t> cmds;
-//    auto _it = cmd_pool.begin();
-//    for (uint32_t i = 0; i < blk_size; i++){
-//        uint256_t ch = *_it;
-//        cmds.push_back(ch);
-//        cmd_pool.erase(ch);
-//    }
     uint32_t cmd_pending_size = cmd_pending_buffer.size();
     for (uint32_t i = 0; i < cmd_pending_size; i++) {
         auto ch = cmd_pending_buffer.front();
@@ -565,8 +558,22 @@ std::vector<uint256_t> HotStuffBase::fetch_cmds() {
             break;
         }
     }
-
     return std::move(cmds);
+}
+
+void HotStuffBase::early_propose(uint32_t _view, const block_t &blk) {
+    if(id != (_view) % get_config().nreplicas) return;
+    tcall.async_call([this, blk](salticidae::ThreadCall::Handle &) {
+        auto cmds = fetch_cmds();
+        if (cmds.size() < blk_size) return;
+        auto proposer = pmaker->get_proposer();
+        if (proposed_view >= get_view()) return;
+        pm_qc_manual.reject();
+        (pm_qc_manual = async_qc_finish(blk)).then([this, cmds=std::move(cmds)](){
+            proposed_view = get_view();
+            on_propose(cmds, pmaker->get_parents());
+        });
+    });
 }
 
 HotStuffBase::~HotStuffBase() {}
@@ -616,12 +623,11 @@ void HotStuffBase::start(
                 e.second(Finality(id, 0, 0, 0, cmd_hash, uint256_t()));
             if (proposer != get_id()) continue;
             if (proposed_view >= get_view()) continue;
-
             if(cmd_pending_buffer.size() >= blk_size){
                 auto cmds = fetch_cmds();
-
-                pmaker->beat().then([this, cmds = std::move(cmds)](ReplicaID proposer) {
+                pmaker->beat().then([this, cmds=std::move(cmds)](ReplicaID proposer) {
                     if (proposer == get_id()) {
+                        if (proposed_view >= get_view()) return;
                         proposed_view = get_view();
                         on_propose(cmds, pmaker->get_parents());
                     }

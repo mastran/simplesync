@@ -101,7 +101,7 @@ void HotStuffCore::check_commit(const block_t &blk) {
     { /* TODO: also commit the uncles/aunts */
         commit_queue.push_back(b);
     }
-    if (b != b_exec)
+    if (b != b_exec && b->decision != 1)
         throw std::runtime_error("safety breached :( " +
                                 std::string(*blk) + " " +
                                 std::string(*b_exec));
@@ -236,9 +236,11 @@ void HotStuffCore::on_receive_proposal(const Proposal &prop) {
         on_qc_finish(bnew->qc_ref);
     finished_propose[bnew] = true;
     on_receive_proposal_(prop);
-    update_proposed_cmds(prop.blk);
     // check if the proposal extends the highest certified block
     if (opinion && !vote_disabled) _vote(bnew);
+
+    update_proposed_cmds(prop.blk);
+    early_propose(view, prop.blk);
 }
 
 void HotStuffCore::on_receive_vote(const Vote &vote) {
@@ -272,11 +274,11 @@ void HotStuffCore::on_receive_vote(const Vote &vote) {
         set_commit_timer(blk, 2 * config.delta);
         qc->compute();
         update_hqc(blk, qc);
-        on_qc_finish(blk);
-        do_broadcast_qc(QC(qc->clone(), this));
         view += 1;
+        on_qc_finish(blk);
         enter_view(view);
         on_enter_view(view);
+        do_broadcast_qc(QC(qc->clone(), this));
     }
 }
 

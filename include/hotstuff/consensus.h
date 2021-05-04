@@ -168,6 +168,7 @@ class HotStuffCore {
 
     virtual void enter_view(uint32_t _view) = 0;
     virtual void update_proposed_cmds(const block_t &blk) = 0;
+    virtual void early_propose(uint32_t _view, const block_t &blk) = 0;
 
     /* The user plugs in the detailed instances for those
      * polymorphic data types. */

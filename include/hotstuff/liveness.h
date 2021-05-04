@@ -339,16 +339,6 @@ class PMRoundRobinProposer: virtual public PaceMaker {
         locked = false;
         last_proposed = hsc->get_genesis();
         proposer_update_last_proposed();
-
-        if (proposer == hsc->get_id()) {
-            auto hs = static_cast<hotstuff::HotStuffBase *>(hsc);
-            hs->do_elected();
-            if(hs->get_proposed_view() >= hsc->get_view()) return;
-            auto cmds = hs->fetch_cmds();
-            if (cmds.size() <= 0)  return;
-            hs->set_proposed_view(hsc->get_view());
-            hsc->on_propose(cmds, get_parents());
-        }
     }
 
     protected:
