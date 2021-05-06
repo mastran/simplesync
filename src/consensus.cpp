@@ -189,10 +189,14 @@ block_t HotStuffCore::on_propose(const std::vector<uint256_t> &cmds,
         throw std::runtime_error("new block should be higher than vheight");
     vheight = bnew->height;
     finished_propose[bnew] = true;
-    _vote(bnew);
+//    _vote(bnew);
     on_propose_(prop);
     /* boradcast to other replicas */
     do_broadcast_proposal(prop);
+    /* set commit timer */
+    set_commit_timer(bnew, 2 * config.delta);
+    /* We use vote cert to change views; so defer it for 5\Delta */
+    set_vote_timer(bnew, 5 * config.delta);
     return bnew;
 }
 
@@ -237,8 +241,9 @@ void HotStuffCore::on_receive_proposal(const Proposal &prop) {
     finished_propose[bnew] = true;
     on_receive_proposal_(prop);
     // check if the proposal extends the highest certified block
-    if (opinion && !vote_disabled) _vote(bnew);
-
+//    if (opinion && !vote_disabled) _vote(bnew);
+    set_commit_timer(bnew, 2 * config.delta);
+    set_vote_timer(bnew, 5 * config.delta);
     update_proposed_cmds(prop.blk);
     early_propose(view, prop.blk);
 }
@@ -271,7 +276,6 @@ void HotStuffCore::on_receive_vote(const Vote &vote) {
     qc->add_part(vote.voter, *vote.cert);
     if (qsize + 1 == config.nmajority)
     {
-        set_commit_timer(blk, 2 * config.delta);
         qc->compute();
         update_hqc(blk, qc);
         view += 1;
@@ -349,6 +353,8 @@ void HotStuffCore::on_viewtrans_timeout() {
     Notify notify(hqc.first->get_hash(), hqc.second->clone(), this);
     do_notify(notify);
 }
+
+void HotStuffCore::on_vote_timeout(const block_t &blk) { _vote(blk); }
 
 /*** end HotStuff protocol logic ***/
 void HotStuffCore::on_init(uint32_t nfaulty, double delta) {

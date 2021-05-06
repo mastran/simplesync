@@ -180,6 +180,7 @@ class HotStuffBase: public HotStuffCore {
     VeriPool vpool;
     std::vector<NetAddr> peers;
     std::unordered_map<uint32_t, TimerEvent> commit_timers;
+    std::unordered_map<uint32_t, TimerEvent> vote_timers;
     TimerEvent blame_timer;
     TimerEvent viewtrans_timer;
 
@@ -308,6 +309,10 @@ class HotStuffBase: public HotStuffCore {
     void stop_blame_timer() override;
     void set_viewtrans_timer(double t_sec) override;
     void stop_viewtrans_timer() override;
+
+    void set_vote_timer(const block_t &blk, double t_sec) override;
+    void stop_vote_timer(uint32_t height) override;
+    void stop_vote_timer_all() override;
 
     void do_decide(Finality &&) override;
     void do_consensus(const block_t &blk) override;

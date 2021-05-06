@@ -128,6 +128,7 @@ class HotStuffCore {
     void on_commit_timeout(const block_t &blk);
     void on_blame_timeout();
     void on_viewtrans_timeout();
+    void on_vote_timeout(const block_t &blk);
 
     void on_receive_qc(const quorum_cert_bt &qc);
 
@@ -163,7 +164,9 @@ class HotStuffCore {
     virtual void stop_blame_timer() = 0;
     virtual void set_viewtrans_timer(double t_sec) = 0;
     virtual void stop_viewtrans_timer() = 0;
-
+    virtual void set_vote_timer(const block_t &blk, double t_sec) = 0;
+    virtual void stop_vote_timer(uint32_t height) = 0;
+    virtual void stop_vote_timer_all() = 0;
     virtual void do_broadcast_qc(const QC &qc) = 0;
 
     virtual void enter_view(uint32_t _view) = 0;

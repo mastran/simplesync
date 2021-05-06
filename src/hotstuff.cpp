@@ -358,6 +358,24 @@ void HotStuffBase::stop_viewtrans_timer() {
     viewtrans_timer.clear();
 }
 
+void HotStuffBase::set_vote_timer(const block_t &blk, double t_sec) {
+    auto height = blk->get_height();
+    auto &timer = vote_timers[height] =
+                          TimerEvent(ec, [this, blk=std::move(blk), height](TimerEvent &) {
+                              on_vote_timeout(blk);
+                              stop_vote_timer(height);
+                          });
+    timer.add(t_sec);
+}
+
+void HotStuffBase::stop_vote_timer(uint32_t height) {
+    vote_timers.erase(height);
+}
+
+void HotStuffBase::stop_vote_timer_all() {
+    vote_timers.clear();
+}
+
 void HotStuffBase::req_blk_handler(MsgReqBlock &&msg, const Net::conn_t &conn) {
     const NetAddr replica = conn->get_peer_addr();
     if (replica.is_null()) return;
