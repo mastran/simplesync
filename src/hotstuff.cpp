@@ -563,17 +563,17 @@ std::vector<uint256_t> HotStuffBase::fetch_cmds() {
 
 void HotStuffBase::early_propose(uint32_t _view, const block_t &blk) {
     if(id != (_view) % get_config().nreplicas) return;
-    tcall.async_call([this, blk](salticidae::ThreadCall::Handle &) {
+
         auto cmds = fetch_cmds();
-        if (cmds.size() < blk_size) return;
+//        if (cmds.size() < blk_size) return;
         auto proposer = pmaker->get_proposer();
         if (proposed_view >= get_view()) return;
         pm_qc_manual.reject();
         (pm_qc_manual = async_qc_finish(blk)).then([this, cmds=std::move(cmds)](){
+            if (proposed_view >= get_view()) return;
             proposed_view = get_view();
             on_propose(cmds, pmaker->get_parents());
         });
-    });
 }
 
 HotStuffBase::~HotStuffBase() {}
